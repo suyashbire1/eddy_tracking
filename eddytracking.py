@@ -370,6 +370,11 @@ class Domain():
         self.coordsh = np.vstack((xx,yy)).T
         self.fq = self.fhgv['f'][:]
 
+    def close(self):
+        self.fhg.close()
+        self.fhgv.close()
+        self.fh.close()
+
 
 def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
     """Returns coordinates of contour of qparam at clev"""
@@ -399,8 +404,10 @@ def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
                         eddy_list.append(eddy)
                         id_right += 1
             eddyfactory.put(eddy_list)
-            print('{} finished time step {}'.format(multiprocessing.current_process().name, time))
+            print("""{} finished time step {}. Found {} eddies!""".format(multiprocessing.current_process().name,time,len(eddy_list)))
         except queue.Empty:
+            eddyfactory.close()
+            eddyfactory.join_thread()
             break
 
 def read_data1(fil,time):
@@ -466,36 +473,47 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     vmin and vmax and checks if they are valid eddies"""
 
     contour_levels = np.sort(-4*np.logspace(vmin,vmax))
-    eddyfactory = multiprocessing.Queue()
-    lock = multiprocessing.Lock()
+    lock = multiprocessing.RLock()
     tsteps = Domain.tim.size
+    eddyfactory = multiprocessing.JoinableQueue(tsteps)
     print(tsteps)
 
-    time_steps = multiprocessing.Queue()
+    time_steps = multiprocessing.Queue(tsteps)
     for i in range(tsteps):
         time_steps.put(i)
+#    time_steps.close() # No more data will be added to time_steps
+#    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
 
     st = time.time()
     mean_variables = read_mean_data(Domain)
     process_count = multiprocessing.cpu_count() - 1
+    #process_count=6
+    jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(target=get_eddy,args=(Domain,contour_levels,eddyfactory,
                                                           lock,time_steps,mean_variables))
         p.start()
+        jobs.append(p)
 
     print('Accessing queue...')
     eddies = EddyRegistry()
     for i in range(tsteps):
         eddies.append(eddyfactory.get(True))
+        eddyfactory.task_done()
+    eddyfactory.join()
+
+    for j in jobs:
+        j.join()
 
     print('Total time taken: {}s'.format(time.time()-st))
     return eddies
 
-def main(start,end):
+def main(start,end,pickle_file):
     fil = ['output__00{}.nc'.format(n) for n in range(start,end)]
     geofil = 'ocean_geometry.nc'
     vgeofil = 'Vertical_coordinate.nc'
     d = Domain(fil,geofil,vgeofil)
-    eddies = find_eddies(d)
-    tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
-    pickle.dump((eddies,tracks),open('detected_eddies',mode='wb'))
+    a = find_eddies(d)
+    d.close()
+    #tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
+    pickle.dump(a,open(pickle_file,mode='wb'))
