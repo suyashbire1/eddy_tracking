@@ -192,6 +192,7 @@ class EddyRegistry():
         self._track_id = 0
         self._index_of_assigned_track_ids = 0
         self._first_time_step_assigned = False
+        self.lock = multiprocessing.RLock()
 
     def __repr__(self):
         return """Eddy list holding lists of
@@ -211,9 +212,11 @@ class EddyRegistry():
 
     def append(self,eddy_list):
         assert isinstance(eddy_list, EddyListAtTime)
+        self.lock.acquire()
         self.erlist.append(eddy_list)
-        self.erlist.sort(key=lambda eddy_list:eddy_list.time)
-        self._assign_track_ids(eddy_list)
+#        self.erlist.sort(key=lambda eddy_list:eddy_list.time)
+#        self._assign_track_ids(eddy_list)
+        self.lock.release()
 
     def _assign_track_ids(self,eddy_list):
         if len(self.erlist) == 1 or self._first_time_step_assigned is False:
@@ -403,11 +406,11 @@ def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
                         eddy.id_ = id_left + str(id_right)
                         eddy_list.append(eddy)
                         id_right += 1
-            eddyfactory.put(eddy_list)
-            print("""{} finished time step {}. Found {} eddies!""".format(multiprocessing.current_process().name,time,len(eddy_list)))
+            eddyfactory.append(eddy_list)
+            print("{} finished time step {}. Found {} eddies!".format(multiprocessing.current_process().name,
+                time,len(eddy_list)))
         except queue.Empty:
-            eddyfactory.close()
-            eddyfactory.join_thread()
+            print('{} exiting.'.format(multiprocessing.current_process().name))
             break
 
 def read_data1(fil,time):
@@ -475,19 +478,17 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     contour_levels = np.sort(-4*np.logspace(vmin,vmax))
     lock = multiprocessing.RLock()
     tsteps = Domain.tim.size
-    eddyfactory = multiprocessing.JoinableQueue(tsteps)
+    eddyfactory = EddyRegistry()
     print(tsteps)
 
     time_steps = multiprocessing.Queue(tsteps)
     for i in range(tsteps):
         time_steps.put(i)
-#    time_steps.close() # No more data will be added to time_steps
-#    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
 
     st = time.time()
     mean_variables = read_mean_data(Domain)
-    process_count = multiprocessing.cpu_count() - 1
-    #process_count=6
+    #process_count = multiprocessing.cpu_count() - 1
+    process_count=4
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(target=get_eddy,args=(Domain,contour_levels,eddyfactory,
@@ -495,18 +496,11 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
         p.start()
         jobs.append(p)
 
-    print('Accessing queue...')
-    eddies = EddyRegistry()
-    for i in range(tsteps):
-        eddies.append(eddyfactory.get(True))
-        eddyfactory.task_done()
-    eddyfactory.join()
-
     for j in jobs:
         j.join()
 
     print('Total time taken: {}s'.format(time.time()-st))
-    return eddies
+    return eddyfactory
 
 def main(start,end,pickle_file):
     fil = ['output__00{}.nc'.format(n) for n in range(start,end)]
@@ -515,5 +509,5 @@ def main(start,end,pickle_file):
     d = Domain(fil,geofil,vgeofil)
     a = find_eddies(d)
     d.close()
-    #tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
+    #tracks = groupby(lambda eddy: eddy.track_id, eddies.iter_eddy())
     pickle.dump(a,open(pickle_file,mode='wb'))
