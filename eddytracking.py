@@ -6,7 +6,7 @@ from netCDF4 import Dataset as dset, MFDataset as mfdset
 from scipy.spatial import Delaunay
 import time
 import pickle
-import seaborn.apionly as sns
+import seaborn as sns
 from toolz import groupby,partial
 import multiprocessing
 import pyximport
@@ -215,6 +215,18 @@ class EddyRegistry():
         self.erlist.sort(key=lambda eddy_list:eddy_list.time)
         self._assign_track_ids(eddy_list)
 
+    def append_eddy(self,eddy):
+        assert insinstance(eddy,Eddy)
+        time = eddy.time
+        for elist in self.erlist:
+            if elist.time == time:
+                elist.append(eddy)
+                break
+        else:
+            new_list = EddyListAtTime(eddy.time)
+            new_list.append(eddy)
+            self.erlist.append(new_list)
+
     def _assign_track_ids(self,eddy_list):
         if len(self.erlist) == 1 or self._first_time_step_assigned is False:
             if self.erlist[0].time == 0:
@@ -339,7 +351,7 @@ class Domain():
         """Initialize the time invariant quantities."""
 
         self.fhg = dset(geofil)
-        self.fhgv = dset(vgeofil)
+        #self.fhgv = dset(vgeofil)
         self.fh = mfdset(fil)
         self.fhgv = self.fhg.variables
         self.fhv = self.fh.variables
@@ -372,43 +384,42 @@ class Domain():
 
     def close(self):
         self.fhg.close()
-        self.fhgv.close()
+        #self.fhgv.close()
         self.fh.close()
 
 
 def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
     """Returns coordinates of contour of qparam at clev"""
 
+    pname = multiprocessing.current_process().name
     while True:
-        try:
-            time = time_steps.get()
-            print('{} assigned time step {}'.format(multiprocessing.current_process().name, time))
-            #lock.acquire()
-            variables = read_data(Domain,time,lock)
-            #lock.release()
-            wparam = variables.get('wparam')
-            xx, yy = np.meshgrid(Domain.xh, Domain.yh)
-            c = cntr.Cntr(xx,yy,wparam)
-
-            eddy_list = EddyListAtTime(time)
-            id_left = str(time) + str('_')
-            id_right = 0
-            for clevs in contour_levels:
-                nlist = c.trace(clevs,clevs,0)
-                ctr_list = nlist[:len(nlist)//2]
-                for i,ctr in enumerate(ctr_list):
-                    temp_eddy = TentativeEddy(ctr,time,variables,Domain,mean_variables)
-                    if temp_eddy.is_eddy:
-                        eddy = Eddy(tentative_eddy=temp_eddy)
-                        eddy.id_ = id_left + str(id_right)
-                        eddy_list.append(eddy)
-                        id_right += 1
-            eddyfactory.put(eddy_list)
-            print("""{} finished time step {}. Found {} eddies!""".format(multiprocessing.current_process().name,time,len(eddy_list)))
-        except queue.Empty:
-            eddyfactory.close()
-            eddyfactory.join_thread()
+        time = time_steps.get(False)
+        if time is None:
             break
+        print('{} assigned time step {}'.format(multiprocessing.current_process().name, time))
+        #lock.acquire()
+        variables = read_data(Domain,time,lock)
+        #lock.release()
+        wparam = variables.get('wparam')
+        xx, yy = np.meshgrid(Domain.xh, Domain.yh)
+        c = cntr.Cntr(xx,yy,wparam)
+
+        eddy_list = EddyListAtTime(time)
+        id_left = str(time) + str('_')
+        id_right = 0
+        for clevs in contour_levels:
+            nlist = c.trace(clevs,clevs,0)
+            ctr_list = nlist[:len(nlist)//2]
+            for i,ctr in enumerate(ctr_list):
+                temp_eddy = TentativeEddy(ctr,time,variables,Domain,mean_variables)
+                if temp_eddy.is_eddy:
+                    eddy = Eddy(tentative_eddy=temp_eddy)
+                    eddy.id_ = id_left + str(id_right)
+                    eddy_list.append(eddy)
+                    id_right += 1
+        eddyfactory.put(eddy_list)
+        print("""{} finished time step {}. Found {} eddies!""".format(pname,time,len(eddy_list)))
+    print('Time steps exhausted! {} exiting!'.format(pname))
 
 def read_data1(fil,time):
     fh = mfdset(fil)
@@ -474,20 +485,23 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
 
     contour_levels = np.sort(-4*np.logspace(vmin,vmax))
     lock = multiprocessing.RLock()
-    tsteps = Domain.tim.size
-    eddyfactory = multiprocessing.JoinableQueue(tsteps)
-    print(tsteps)
+    #tsteps = Domain.tim.size
+    tsteps = 8
+    eddyfactory = multiprocessing.Queue(tsteps)
+    print('Time steps to be processed is {}.'.format(tsteps))
 
-    time_steps = multiprocessing.Queue(tsteps)
+    process_count = multiprocessing.cpu_count()
+    #process_count=6
+    time_steps = multiprocessing.Queue(tsteps + process_count)
     for i in range(tsteps):
         time_steps.put(i)
+    for i in range(process_count):
+        time_steps.put(None)
 #    time_steps.close() # No more data will be added to time_steps
 #    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
 
     st = time.time()
     mean_variables = read_mean_data(Domain)
-    process_count = multiprocessing.cpu_count() - 1
-    #process_count=6
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(target=get_eddy,args=(Domain,contour_levels,eddyfactory,
@@ -498,12 +512,19 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     print('Accessing queue...')
     eddies = EddyRegistry()
     for i in range(tsteps):
-        eddies.append(eddyfactory.get(True))
-        eddyfactory.task_done()
-    eddyfactory.join()
+        print('Waiting for {} list.'.format(i))
+        eddy = eddyfactory.get()
+        print('{} list received!'.format(eddy.time))
+        eddies.append(eddy)
+        print('{} list appended!'.format(eddy.time))
+        print('Objects still in queue: {}'.format(eddyfactory.qsize()))
+    print('All timesteps read! Active processes: {}'.format(multiprocessing.active_children()))
 
-    for j in jobs:
-        j.join()
+    for p in jobs:
+        p.join(10)
+        print(p.name, p.exitcode)
+
+    print('All processes joined!')
 
     print('Total time taken: {}s'.format(time.time()-st))
     return eddies
@@ -513,7 +534,11 @@ def main(start,end,pickle_file):
     geofil = 'ocean_geometry.nc'
     vgeofil = 'Vertical_coordinate.nc'
     d = Domain(fil,geofil,vgeofil)
-    a = find_eddies(d)
+    eddies = find_eddies(d)
+    print('Received eddy registry!')
     d.close()
-    #tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
-    pickle.dump(a,open(pickle_file,mode='wb'))
+    tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
+    with open(pickle_file,mode='wb') as f:
+        print('Dumping data!')
+        pickle.dump((eddies,tracks),f)
+        print('Done!')
