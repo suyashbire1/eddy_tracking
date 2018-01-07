@@ -13,6 +13,8 @@ import pyximport
 pyximport.install()
 import getvaratzc as gvz
 import queue
+import pymom6.pymom6 as pym6
+mv = pym6.MOM6Variable
 
 def _distance(x1,y1,x2,y2):
     """Calculates the distance between two points"""
@@ -149,7 +151,7 @@ class TentativeEddy:
         """Finds if the sign of vorticity is
         same everywhere inside the contour."""
         rzeta = self.variables.get('rzeta')
-        mask = self.in_hull(self.domain.coordsh,self.ctr).reshape(rzeta.shape)
+        mask = self.in_hull(self.domain.coordsq,self.ctr).reshape(rzeta.shape)
         rzetainsidecontour = rzeta[mask]
         vortsame = (np.all(rzetainsidecontour < 0) if rzetainsidecontour[0] < 0
                 else np.all(rzetainsidecontour > 0))
@@ -163,7 +165,7 @@ class TentativeEddy:
         e = self.variables.get('e')
         emean = self.mean_variables.get('emean')
         ssha = e - emean
-        mask = self.in_hull(self.domain.coordsh,self.ctr).reshape(ssha.shape)
+        mask = self.in_hull(self.domain.coordsq,self.ctr).reshape(ssha.shape)
         sshainsidecontour = ssha[mask]
         sshamax = np.amax(sshainsidecontour)
         sshamin = np.amin(sshainsidecontour)
@@ -356,6 +358,7 @@ class Domain():
     def __init__(self,fil,geofil,vgeofil):
         """Initialize the time invariant quantities."""
 
+        self.geofil = geofil
         self.fhg = dset(geofil)
         #self.fhgv = dset(vgeofil)
         self.fh = mfdset(fil)
@@ -394,7 +397,7 @@ class Domain():
         self.fh.close()
 
 
-def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
+def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables,z):
     """Returns coordinates of contour of qparam at clev"""
 
     pname = multiprocessing.current_process().name
@@ -404,7 +407,7 @@ def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
             break
         print('{} assigned time step {}'.format(multiprocessing.current_process().name, time))
         #lock.acquire()
-        variables = read_data(Domain,time,lock)
+        variables = read_data(Domain,time,lock,z)
         #lock.release()
         wparam = variables.get('wparam')
         xx, yy = np.meshgrid(Domain.xh, Domain.yh)
@@ -427,78 +430,57 @@ def get_eddy(Domain,contour_levels,eddyfactory,lock,time_steps,mean_variables):
         print("""{} finished time step {}. Found {} eddies!""".format(pname,time,len(eddy_list)))
     print('Time steps exhausted! {} exiting!'.format(pname))
 
-def read_data1(fil,time):
-    fh = mfdset(fil)
-    from pym6 import Variable, Domain
-    gv = Variable.GridVariable
-    Domain = Domain.Domain
-    d = Domain(geofil, vgeofil,-25,0,10,60,ts=time,te=time+1)
-    e = gv('e',d,'hl',fh).read_array(tmean=False)
-    wparam = gv('wparam',d,'hl',fh).read_array(tmean=False).toz(-1,e=e).values.squeeze()
-    uy = (gv('u',d,'ul',fh).xsm().ysm().yep()
-          .read_array(extend_kwargs=dict(method='zeros'),tmean=False,filled=0)
-          .move_to('hl').move_to('vl').ddx(2).toz(-1,e=e).values.squeeze())
-    vx = (gv('v',d,'vl',fh).ysm().xsm().xep()
-          .read_array(extend_kwargs=dict(method='zeros'),tmean=False,filled=0)
-          .move_to('hl').move_to('ul').ddx(3).toz(-1,e=e).values.squeeze())
-    print(np.max(uy),np.min(uy),np.max(vx),np.min(vx))
-    print(np.all(uy==0),np.all(vx==0))
-    zeta = vx - uy
-    rzeta = zeta/d.f
-    #plt.pcolormesh(d.lonh,d.lath,wparam,vmax=1e-8,vmin=-1e-8,cmap='RdBu_r')
-    plt.pcolormesh(d.lonh,d.lath,zeta,vmax=1e-5,vmin=-1e-5,cmap='RdBu_r')
-    plt.colorbar()
-
 def read_mean_data(Domain,tsteps):
-    e = Domain.fhv['e'][:tsteps,0,:,:]
-    e = np.mean(e,axis=0)
-    return dict(emean = e)
+    eq = (mv('e',Domain.fh).final_loc('ql').isel(zi=slice(0,1)).xep().yep().read()
+          .move_to('u').move_to('q').nanmean(axis=0).compute())
+    return dict(emean = e.values.squeeze())
 
-def read_data(Domain,time,lock):
+def read_data(Domain,time,lock,z):
     lock.acquire()
-    wparam = Domain.fhv['wparam'][time:time+1,:,:,:]
-    e = Domain.fhv['e'][time:time+1,:,:,:]
-    u = Domain.fhv['u'][time:time+1,:,:,:].filled(0)
-    v = Domain.fhv['v'][time:time+1,:,:,:].filled(0)
+    e = mv('e',Domain.fh).isel(Time=slice(time,time+1)).read().compute()
+    eq = (mv('e',Domain.fh).final_loc('ql').isel(Time=slice(time,time+1)).xep().yep().read()
+          .move_to('u').move_to('q').compute())
+    ux = (mv('u',Domain.fh).final_loc('ql').xsm().xep().yep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=3).move_to('u').move_to('q').compute())
+    vy = (mv('v',Domain.fh).final_loc('ql').ysm().yep().xep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=2).move_to('v').move_to('q').compute())
+    sn = (ux-vy).compute()
+    snsq = (sn**2).compute()
+    vx = (mv('v',Domain.fh).final_loc('ql').xep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=3).compute())
+    uy = (mv('u',Domain.fh).final_loc('ql').yep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=2).compute())
+    vxuy = (vx*uy).compute()
+    vxuy4 = (vxuy*4).compute()
+    vx = (mv('v',Domain.fh).final_loc('ql').xep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=3).compute())
+    uy = (mv('u',Domain.fh).final_loc('ql').yep()
+          .isel(Time=slice(time,time+1))
+          .read().dbyd(axis=2).compute())
     lock.release()
 
-    u = np.concatenate((np.zeros(u[:,:,:,:1].shape),u),axis=3)
-    u = 0.5*(u[:,:,:,:-1] + u[:,:,:,1:])
-    u = np.concatenate((-u[:,:,:1,:],u,-u[:,:,-1:,:]),axis=2)
-    u = 0.5*(u[:,:,:-1,:] + u[:,:,1:,:])
-    uy = np.diff(u,axis=2)/Domain.dyt
+    wparam = (snsq + vxuy4).toz(z,eq,dimstr='z').compute().values.squeeze()
+    zeta = (vx-uy).toz(z,eq,dimstr='z').compute().values.squeeze()
+    rzeta = zeta/Domain.fq
 
-    v = np.concatenate((np.zeros(v[:,:,:1,:].shape),v),axis=2)
-    v = 0.5*(v[:,:,:-1,:] + v[:,:,1:,:])
-    v = np.concatenate((-v[:,:,:,:1],v,-v[:,:,:,-1:]),axis=3)
-    v = 0.5*(v[:,:,:,:-1] + v[:,:,:,1:])
-    vx = np.diff(v,axis=3)/Domain.dxt
+    return dict(wparam=wparam,rzeta=rzeta,e=eq.values.squeeze()[0,:,:])
 
-    zeta = vx - uy
-    rzeta = zeta/Domain.fhh
-
-    wparam = gvz.getvaratzc(wparam,np.array([-1], dtype=np.float32),e)
-    rzeta = gvz.getvaratzc(rzeta.astype(np.float32),np.array([-1], dtype=np.float32),e)
-    #plt.pcolormesh(Domain.xh,Domain.yh,wparam[0,0,:,:],vmax=1e-8,vmin=-1e-8,cmap='RdBu_r')
-    #plt.pcolormesh(d.lonh,d.lath,rzeta,vmax=1,vmin=-1,cmap='RdBu_r')
-    #plt.colorbar()
-    return dict(wparam=wparam[0,0,:,:],rzeta=rzeta[0,0,:,:],e=e[0,0,:,:])
-
-
-def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
+def find_eddies(Domain,process_count,z,vmin=-10.3,vmax=-8.8):
     """Searches contours at regular intervals between
     vmin and vmax and checks if they are valid eddies"""
 
     contour_levels = np.sort(-4*np.logspace(vmin,vmax))
     lock = multiprocessing.RLock()
-    #tsteps = Domain.tim.size
-    tsteps = 1
+    tsteps = Domain.tim.size
+    #tsteps = 2
     eddyfactory = multiprocessing.Manager().Queue(tsteps)
     print('Time steps to be processed is {}.'.format(tsteps))
 
-    process_count = 1
-    #process_count = multiprocessing.cpu_count()
-    #process_count=6
     time_steps = multiprocessing.Queue(tsteps + process_count)
     for i in range(tsteps):
         time_steps.put(i)
@@ -512,7 +494,7 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(target=get_eddy,args=(Domain,contour_levels,eddyfactory,
-                                                          lock,time_steps,mean_variables))
+                                                          lock,time_steps,mean_variables,z))
         p.start()
         jobs.append(p)
 
@@ -536,12 +518,12 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     print('Total time taken: {}s'.format(time.time()-st))
     return eddies
 
-def main(start,end,pickle_file):
+def main(start,end,pickle_file,process_count=48,z=-1):
     fil = ['output__00{}.nc'.format(n) for n in range(start,end)]
     geofil = 'ocean_geometry.nc'
     vgeofil = 'Vertical_coordinate.nc'
     d = Domain(fil,geofil,vgeofil)
-    eddies = find_eddies(d)
+    eddies = find_eddies(d,process_count=process_count,z=z)
     print('Received eddy registry!')
     d.close()
     tracks = groupby(lambda eddy:eddy.track_id,eddies.iter_eddy())
