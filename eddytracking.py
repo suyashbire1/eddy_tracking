@@ -14,6 +14,10 @@ pyximport.install()
 import getvaratzc as gvz
 import queue
 
+def _distance(x1,y1,x2,y2):
+    """Calculates the distance between two points"""
+    return np.sqrt((x1-x2)**2 + (y1-y2)**2)
+
 class Eddy:
     """A class to hold information about detected eddies"""
 
@@ -119,7 +123,7 @@ class TentativeEddy:
     @staticmethod
     def distance(x1,y1,x2,y2):
         """Calculates the distance between two points"""
-        return np.sqrt((x1-x2)**2 + (y1-y2)**2)
+        return _distance(x1,y1,x2,y2)
 
     def is_contour_not_circular(self,errmax=0.35):
         """Detects the circularity of a contour by comparing
@@ -249,15 +253,16 @@ class EddyRegistry():
                             self._track_id += 1
                     self._index_of_assigned_track_ids = i+1
 
-    def _distance(self,x1,y1,x2,y2):
+    @staticmethod
+    def distance(x1,y1,x2,y2):
         """Calculates the distance between two points"""
-        return np.sqrt((x1-x2)**2 + (y1-y2)**2)
+        return _distance(x1,y1,x2,y2)
 
     def _is_new_contour_close(self,eddy1,eddy2,rmultiplier=1.2):
         """Returns true if distance between centers of two eddies
         is less than the sum of their radii."""
-        return (self._distance(eddy1.xckm,eddy1.yckm,
-                               eddy2.xckm,eddy2.yckm) <
+        return (self.distance(eddy1.xckm,eddy1.yckm,
+                              eddy2.xckm,eddy2.yckm) <
                 rmultiplier*(eddy1.r + eddy2.r))
 
     def _is_change_in_area_reasonable(self,eddy1,eddy2,
@@ -325,9 +330,10 @@ class EddyListAtTime():
                     break
         return eddy_already_present
 
-    def _distance(self,x1,y1,x2,y2):
+    @staticmethod
+    def distance(x1,y1,x2,y2):
         """Calculates the distance between two points"""
-        return np.sqrt((x1-x2)**2 + (y1-y2)**2)
+        return _distance(x1,y1,x2,y2)
 
     def _does_vort_sign_match(self,eddy1,eddy2):
         """Returns true if vorticities of both eddies have
@@ -337,8 +343,8 @@ class EddyListAtTime():
     def _is_center_inside_prev_eddy(self,eddy1,eddy2):
         """Returns true if the center of eddy1 is
         inside eddy2"""
-        return (self._distance(eddy1.xckm,eddy1.yckm,
-                               eddy2.xckm,eddy2.yckm) < eddy2.r)
+        return (self.distance(eddy1.xckm,eddy1.yckm,
+                              eddy2.xckm,eddy2.yckm) < eddy2.r)
 
     def _eddies_same(self,eddy1,eddy2):
         """Returns true if both eddies are deemed the same."""
@@ -443,8 +449,8 @@ def read_data1(fil,time):
     plt.pcolormesh(d.lonh,d.lath,zeta,vmax=1e-5,vmin=-1e-5,cmap='RdBu_r')
     plt.colorbar()
 
-def read_mean_data(Domain):
-    e = Domain.fhv['e'][:,0,:,:]
+def read_mean_data(Domain,tsteps):
+    e = Domain.fhv['e'][:tsteps,0,:,:]
     e = np.mean(e,axis=0)
     return dict(emean = e)
 
@@ -486,11 +492,12 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
     contour_levels = np.sort(-4*np.logspace(vmin,vmax))
     lock = multiprocessing.RLock()
     #tsteps = Domain.tim.size
-    tsteps = 8
-    eddyfactory = multiprocessing.Queue(tsteps)
+    tsteps = 1
+    eddyfactory = multiprocessing.Manager().Queue(tsteps)
     print('Time steps to be processed is {}.'.format(tsteps))
 
-    process_count = multiprocessing.cpu_count()
+    process_count = 1
+    #process_count = multiprocessing.cpu_count()
     #process_count=6
     time_steps = multiprocessing.Queue(tsteps + process_count)
     for i in range(tsteps):
@@ -501,7 +508,7 @@ def find_eddies(Domain,vmin=-10.3,vmax=-8.8):
 #    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
 
     st = time.time()
-    mean_variables = read_mean_data(Domain)
+    mean_variables = read_mean_data(Domain,tsteps)
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(target=get_eddy,args=(Domain,contour_levels,eddyfactory,
