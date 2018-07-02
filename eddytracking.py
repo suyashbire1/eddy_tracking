@@ -1,19 +1,13 @@
-import sys
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib._cntr as cntr
 from netCDF4 import Dataset as dset, MFDataset as mfdset
 from scipy.spatial import Delaunay
 import time
 import pickle
-import seaborn as sns
-from toolz import groupby, partial
+from toolz import groupby
 import multiprocessing
-import pyximport
-pyximport.install()
-import getvaratzc as gvz
-import queue
 import pymom6.pymom6 as pym6
+from matplotlib._contour import QuadContourGenerator
+import matplotlib as mpl
 mv = pym6.MOM6Variable
 
 
@@ -426,14 +420,14 @@ def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
         #lock.release()
         wparam = variables.get('wparam')
         xx, yy = np.meshgrid(Domain.xh, Domain.yh)
-        c = cntr.Cntr(xx, yy, wparam)
+        contour_field = QuadContourGenerator(
+            xx, yy, wparam, None, mpl.rcParams['contour.corner_mask'], 0)
 
         eddy_list = EddyListAtTime(time)
         id_left = str(time) + str('_')
         id_right = 0
         for clevs in contour_levels:
-            nlist = c.trace(clevs, clevs, 0)
-            ctr_list = nlist[:len(nlist) // 2]
+            ctr_list = contour_field.create_contour(clevs)
             for i, ctr in enumerate(ctr_list):
                 temp_eddy = TentativeEddy(ctr, time, variables, Domain,
                                           mean_variables)
@@ -501,7 +495,7 @@ def find_eddies(Domain,
     contour_levels = -np.logspace(vmin, vmax, clevs)
     lock = multiprocessing.RLock()
     tsteps = Domain.tim.size
-    #tsteps = 2
+    # tsteps = 2
     eddyfactory = multiprocessing.Manager().Queue(tsteps)
     print('Time steps to be processed is {}.'.format(tsteps))
 
@@ -549,7 +543,7 @@ def find_eddies(Domain,
 
 
 def main(start, end, pickle_file, process_count=48, z=-1):
-    fil = ['output__00{}.nc'.format(n) for n in range(start, end)]
+    fil = ['output__{:04}.nc'.format(n) for n in range(start, end)]
     geofil = 'ocean_geometry.nc'
     vgeofil = 'Vertical_coordinate.nc'
     d = Domain(fil, geofil, vgeofil)
