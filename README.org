@@ -1,0 +1,27 @@
+* Installation
+
+#+begin_src shell
+git clone https://github.com/suyashbire1/eddy_tracking.git
+#+end_src
+Add the eddy_tracking folder to your ~PATH~ or ~PYTHONPATH~.
+
+* Customization
+
+Modify the ~Domain~, ~read_data~, and ~read_mean_data~ functions and their calls as per your input data.
+
+#+begin_src python
+from eddytracking import main
+
+# process_count should be less than or equal to the number of processor cores
+# z = -1 is used for detecting eddies at surface
+# vmin, vmax, and clevs (contour levels) can be changed according to your need. Eddies are searched at clev levels bwtween vmin and vmax. If vmin = vmax, eddies are only searched at one level, vmax.
+
+main('detected_eddies', process_count=48, z=-1, vmin=-10.3011, vmax=-8.6989, clevs=20)
+#+end_src
+
+The following code can be used to reload the eddy and track information.
+#+BEGIN_SRC python
+import pickle
+with open('detected_eddies', 'rb') as f:
+    eddies, tracks = pickle.load(f)
+#+END_SRC

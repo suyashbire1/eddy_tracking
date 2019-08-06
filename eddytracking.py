@@ -362,17 +362,17 @@ class EddyListAtTime():
 
 class Domain():
     def __init__(self):
-        """Initialize the time invariant quantities."""
+        """This class stores information about the geometry of the domain."""
 
         # It is best to read xh, yh, xq, yq, and tim from model
         # output files. If reading from a file, make sure to pass file
         # name and open it here.
 
-        self.xq = # Define the x locations of vorticity points
-        self.yq = # Define the y locations of vorticity points
-        self.xh = # Define the x locations of tracer points
-        self.yh = # Define the y locations of tracer points
-        self.tim = # Define the time steps of your data
+        self.xq = None # Define the x locations of vorticity points
+        self.yq = None # Define the y locations of vorticity points
+        self.xh = None # Define the x locations of tracer points
+        self.yh = None # Define the y locations of tracer points
+        self.tim = None # Define the time steps of your data
 
         [xx, yy] = np.meshgrid(self.xh, self.yh)
         xx = xx.reshape(xx.size)
@@ -386,7 +386,10 @@ class Domain():
 
 def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
              mean_variables, z):
-    """Returns coordinates of contour of qparam at clev"""
+    """Determines the coordinates of contours of qparam at
+             contour_levels, passes them on to tentative_eddy, and
+             puts them in the queue, eddyfactory, if tentative_eddy
+             is confirmed to be an actual eddy."""
 
     pname = multiprocessing.current_process().name
     while True:
@@ -395,7 +398,8 @@ def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
             break
         print('{} assigned time step {}'.format(
             multiprocessing.current_process().name, time))
-        variables = read_data(time, lock)
+
+        variables = read_data(time, lock, z) # MODIFY ARGUMENTS ACCORDING TO YOUR IMPLEMENTATION
         wparam = variables.get('wparam')
         xx, yy = np.meshgrid(Domain.xh, Domain.yh)
         contour_field = QuadContourGenerator(
@@ -421,27 +425,27 @@ def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
 
 
 def read_mean_data():
-    # This function returns mean SSH, which is stored as emean in the
-    # returned dictionary.
+    """This function returns mean SSH, which is stored as emean in the
+    returned dictionary."""
 
-    # ssh = MODIFY HERE (make sure that ssh is 2D numpy array)
+    # ssh = MODIFY HERE (make sure that ssh is 2D numpy array and located at tracer points)
 
     assert ssh.ndim == 2
     return dict(emean=ssh)
 
 
-def read_data(time, lock):
-    ### This function returns OW parameter (wparam), relative
-    ### vorticity (rzeta), and SSH (e) at time.
+def read_data(tim, lock, z):
+    """This function returns OW parameter (wparam), relative vorticity
+    (rzeta) both at height z, and SSH (e) at time tim."""
 
     # UNCOMMENT THE FOLLOWING LINE IF YOU ARE USING NETCDF4 TO READ
     # DATA FROM FILE. THIS IS TO PREVENT TWO PROCESSES FROM ACCESSING
     # A FILE AT THE SAME TIME.
     # lock.acquire()
 
-    # wparam = Make sure it is 2D numpy array
-    # rzeta  = Make sure it is 2D numpy array
-    # SSH    = Make sure it is 2D numpy array
+    # wparam = Make sure it is 2D numpy array and located at tracer points
+    # rzeta  = Make sure it is 2D numpy array and located at vorticity points
+    # SSH    = Make sure it is 2D numpy array and located at tracer points
 
     # UNCOMMENT THE FOLLOWING LINE IF YOU ARE USING NETCDF4 TO READ DATA FROM FILE
     # lock.release()
@@ -455,16 +459,11 @@ def read_data(time, lock):
 def find_eddies(Domain,
                 process_count,
                 z,
-                vmin=-10.3011,
-                vmax=-8.6989,
-                clevs=20):
-    """Searches contours at regular intervals between
-    vmin and vmax and checks if they are valid eddies"""
+                contour_levels):
+    "Delegates eddy tracking responsibilities to multiple processes"
 
-    contour_levels = -np.logspace(vmin, vmax, clevs)
     lock = multiprocessing.RLock()
     tsteps = Domain.tim.size
-    # tsteps = 2
     eddyfactory = multiprocessing.Manager().Queue(tsteps)
     print('Time steps to be processed is {}.'.format(tsteps))
 
@@ -474,12 +473,8 @@ def find_eddies(Domain,
     for i in range(process_count):
         time_steps.put(None)
 
-
-#    time_steps.close() # No more data will be added to time_steps
-#    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
-
     st = time.time()
-    mean_variables = read_mean_data()
+    mean_variables = read_mean_data() # MODIFY ARGUMENTS ACCORDING TO YOUR IMPLEMENTATION
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(
@@ -511,13 +506,33 @@ def find_eddies(Domain,
     return eddies
 
 
-def main(start, end, pickle_file, process_count=48, z=-1):
-    fil = ['output__{:04}.nc'.format(n) for n in range(start, end)]
-    geofil = 'ocean_geometry.nc'
-    vgeofil = 'Vertical_coordinate.nc'
-    d = Domain() # Add arguments to Domain if your
-    # implementation needs them
-    eddies = find_eddies(d, process_count=process_count, z=z)
+def main(pickle_file, process_count=48, z=-1,
+         vmin=-10.3011, vmax=-8.6989, clevs=20):
+    """This function is called from the python interpreter to run the
+         eddy tracking program.
+
+    :param pickle_file: Eddies and tracks will be pickled in this file
+    :param process_count: Number of processor cores the program will
+    use (should be <= max number of cores given by
+    multiprocessing.cpu_count() for efficiency )
+    :param z: The height at which eddy tracking is done (implement
+    this according to your need)
+    :param vmin: Max value of OW threshold at which search for eddies
+    is carried out
+    :param vmax: Min value of OW threshold at which search for eddies
+    is carried out
+    :param clevs: Number of levels between vmin and vmax separated on
+    a log scale (this is ignored if vmax == vmin)
+    :returns: None
+
+    """
+    d = Domain() # ADD ARGUMENTS TO THIS CALL IF YOUR IMPLEMENTATION NEEDS THEM
+
+    if vmax == vmin:
+        contour_levels = [vmax]
+    else:
+        contour_levels = -np.logspace(vmin, vmax, clevs)
+    eddies = find_eddies(d, process_count, z, contour_levels)
     print('Received eddy registry!')
     tracks = groupby(lambda eddy: eddy.track_id, eddies.iter_eddy())
     with open(pickle_file, mode='wb') as f:
