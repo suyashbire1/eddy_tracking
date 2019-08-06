@@ -5,10 +5,10 @@ import time
 import pickle
 from toolz import groupby
 import multiprocessing
-import pymom6.pymom6 as pym6
+#import pymom6.pymom6 as pym6
 from matplotlib._contour import QuadContourGenerator
 import matplotlib as mpl
-mv = pym6.MOM6Variable
+#mv = pym6.MOM6Variable
 
 
 def _distance(x1, y1, x2, y2):
@@ -158,12 +158,11 @@ class TentativeEddy:
         return vortsame
 
     def get_max_ssha(self):
-        """Finds if the sign of vorticity is
-        same everywhere inside the contour."""
+        """Returns extreme SSHA inside contour"""
         e = self.variables.get('e')
         emean = self.mean_variables.get('emean')
         ssha = e - emean
-        mask = self.in_hull(self.domain.coordsq, self.ctr).reshape(ssha.shape)
+        mask = self.in_hull(self.domain.coordsh, self.ctr).reshape(ssha.shape)
         sshainsidecontour = ssha[mask]
         sshamax = np.amax(sshainsidecontour)
         sshamin = np.amin(sshainsidecontour)
@@ -362,47 +361,28 @@ class EddyListAtTime():
 
 
 class Domain():
-    def __init__(self, fil, geofil, vgeofil):
+    def __init__(self):
         """Initialize the time invariant quantities."""
 
-        self.geo = pym6.GridGeometry(geofil)
-        self.fhg = dset(geofil)
-        #self.fhgv = dset(vgeofil)
-        self.fh = mfdset(fil)
-        self.fhgv = self.fhg.variables
-        self.fhv = self.fh.variables
+        # It is best to read xh, yh, xq, yq, and tim from model
+        # output files. If reading from a file, make sure to pass file
+        # name and open it here.
 
-        self.xq = self.fhv['xq'][:]
-        self.yq = self.fhv['yq'][:]
-        self.xh = self.fhv['xh'][:]
-        self.yh = self.fhv['yh'][:]
-        self.zi = self.fhv['zi'][:]
-        self.zl = self.fhv['zl'][:]
-        self.tim = self.fhv['Time'][:]
-        self.dxbu = self.fhgv['dxBu'][:]
-        self.dxcv = self.fhgv['dxCv'][:]
-        self.dycv = self.fhgv['dyCv'][:]
-        self.dybu = self.fhgv['dyBu'][:]
-        self.dxt = self.fhgv['dxT'][:]
-        self.dyt = self.fhgv['dyT'][:]
+        self.xq = # Define the x locations of vorticity points
+        self.yq = # Define the y locations of vorticity points
+        self.xh = # Define the x locations of tracer points
+        self.yh = # Define the y locations of tracer points
+        self.tim = # Define the time steps of your data
+
+        [xx, yy] = np.meshgrid(self.xh, self.yh)
+        xx = xx.reshape(xx.size)
+        yy = yy.reshape(yy.size)
+        self.coordsh = np.vstack((xx, yy)).T
+
         [xx, yy] = np.meshgrid(self.xq, self.yq)
         xx = xx.reshape(xx.size)
         yy = yy.reshape(yy.size)
         self.coordsq = np.vstack((xx, yy)).T
-        [xx, yy] = np.meshgrid(self.xh, self.yh)
-        self.R = 6.378e3  #km
-        self.omega = 2 * np.pi * (1 / 24 / 3600 + 1 / 365 / 24 / 3600)
-        self.fhh = 2 * self.omega * np.sin(np.radians(yy))
-        xx = xx.reshape(xx.size)
-        yy = yy.reshape(yy.size)
-        self.coordsh = np.vstack((xx, yy)).T
-        self.fq = self.fhgv['f'][:]
-
-    def close(self):
-        self.fhg.close()
-        #self.fhgv.close()
-        self.fh.close()
-
 
 def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
              mean_variables, z):
@@ -415,9 +395,7 @@ def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
             break
         print('{} assigned time step {}'.format(
             multiprocessing.current_process().name, time))
-        #lock.acquire()
-        variables = read_data(Domain, time, lock, z)
-        #lock.release()
+        variables = read_data(time, lock)
         wparam = variables.get('wparam')
         xx, yy = np.meshgrid(Domain.xh, Domain.yh)
         contour_field = QuadContourGenerator(
@@ -442,46 +420,36 @@ def get_eddy(Domain, contour_levels, eddyfactory, lock, time_steps,
     print('Time steps exhausted! {} exiting!'.format(pname))
 
 
-def read_mean_data(Domain, tsteps):
-    eq = (mv('e', Domain.fh).final_loc('qi').isel(
-        zi=slice(0, 1)).xep().yep().read().move_to('u').move_to('q').nanmean(
-            axis=0).compute())
-    return dict(emean=eq.values.squeeze())
+def read_mean_data():
+    # This function returns mean SSH, which is stored as emean in the
+    # returned dictionary.
+
+    # ssh = MODIFY HERE (make sure that ssh is 2D numpy array)
+
+    assert ssh.ndim == 2
+    return dict(emean=ssh)
 
 
-def read_data(Domain, time, lock, z):
-    lock.acquire()
-    e = mv('e', Domain.fh).isel(Time=slice(time, time + 1)).read().compute()
-    eq = (mv('e', Domain.fh).final_loc('qi').geometry(Domain.geo).isel(
-        Time=slice(time, time +
-                   1)).xep().yep().read().move_to('u').move_to('q').compute())
-    ux = (mv('u', Domain.fh).final_loc('ql').geometry(
-        Domain.geo).xsm().xep().yep().isel(
-            Time=slice(time, time + 1)).read().dbyd(
-                axis=3).move_to('u').move_to('q').compute())
-    vy = (mv('v', Domain.fh).final_loc('ql').geometry(
-        Domain.geo).ysm().yep().xep().isel(
-            Time=slice(time, time + 1)).read().dbyd(
-                axis=2).move_to('v').move_to('q').compute())
-    sn = (ux - vy).compute()
-    snsq = (sn**2).compute()
-    vx = (mv('v', Domain.fh).final_loc('ql').geometry(Domain.geo).xep().isel(
-        Time=slice(time, time + 1)).read().dbyd(axis=3).compute())
-    uy = (mv('u', Domain.fh).final_loc('ql').geometry(Domain.geo).yep().isel(
-        Time=slice(time, time + 1)).read().dbyd(axis=2).compute())
-    vxuy = (vx * uy).compute()
-    vxuy4 = (vxuy * 4).compute()
-    vx = (mv('v', Domain.fh).final_loc('ql').geometry(Domain.geo).xep().isel(
-        Time=slice(time, time + 1)).read().dbyd(axis=3).compute())
-    uy = (mv('u', Domain.fh).final_loc('ql').geometry(Domain.geo).yep().isel(
-        Time=slice(time, time + 1)).read().dbyd(axis=2).compute())
-    lock.release()
+def read_data(time, lock):
+    ### This function returns OW parameter (wparam), relative
+    ### vorticity (rzeta), and SSH (e) at time.
 
-    wparam = (snsq + vxuy4).toz(z, eq, dimstr='z').compute().values.squeeze()
-    zeta = (vx - uy).toz(z, eq, dimstr='z').compute().values.squeeze()
-    rzeta = zeta / Domain.fq
+    # UNCOMMENT THE FOLLOWING LINE IF YOU ARE USING NETCDF4 TO READ
+    # DATA FROM FILE. THIS IS TO PREVENT TWO PROCESSES FROM ACCESSING
+    # A FILE AT THE SAME TIME.
+    # lock.acquire()
 
-    return dict(wparam=wparam, rzeta=rzeta, e=eq.values.squeeze()[0, :, :])
+    # wparam = Make sure it is 2D numpy array
+    # rzeta  = Make sure it is 2D numpy array
+    # SSH    = Make sure it is 2D numpy array
+
+    # UNCOMMENT THE FOLLOWING LINE IF YOU ARE USING NETCDF4 TO READ DATA FROM FILE
+    # lock.release()
+
+    assert wparam.ndim == 2
+    assert rzeta.ndim == 2
+    assert SSH.ndim == 2
+    return dict(wparam=wparam, rzeta=rzeta, e=SSH)
 
 
 def find_eddies(Domain,
@@ -511,7 +479,7 @@ def find_eddies(Domain,
 #    time_steps.join_thread() # Wait till all the data has been flushed to time_steps
 
     st = time.time()
-    mean_variables = read_mean_data(Domain, tsteps)
+    mean_variables = read_mean_data()
     jobs = []
     for i in range(process_count):
         p = multiprocessing.Process(
@@ -547,10 +515,10 @@ def main(start, end, pickle_file, process_count=48, z=-1):
     fil = ['output__{:04}.nc'.format(n) for n in range(start, end)]
     geofil = 'ocean_geometry.nc'
     vgeofil = 'Vertical_coordinate.nc'
-    d = Domain(fil, geofil, vgeofil)
+    d = Domain() # Add arguments to Domain if your
+    # implementation needs them
     eddies = find_eddies(d, process_count=process_count, z=z)
     print('Received eddy registry!')
-    d.close()
     tracks = groupby(lambda eddy: eddy.track_id, eddies.iter_eddy())
     with open(pickle_file, mode='wb') as f:
         print('Dumping data!')
